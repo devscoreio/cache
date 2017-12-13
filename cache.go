@@ -8,8 +8,8 @@ import (
 
 	"github.com/go-redis/redis"
 
-	"github.com/go-redis/cache/internal/lrucache"
-	"github.com/go-redis/cache/internal/singleflight"
+	"github.com/devscoreio/cache/internal/lrucache"
+	"github.com/devscoreio/cache/internal/singleflight"
 )
 
 var ErrCacheMiss = errors.New("cache: key is missing")
@@ -78,13 +78,16 @@ func (cd *Codec) Set(item *Item) error {
 	_, err := cd.set(item)
 	return err
 }
+func (cd *Codec) SetLocal(item *Item) error {
+	cd.localCache.Set(item.Key, item.Object)
+	return nil
+}
 
 func (cd *Codec) set(item *Item) ([]byte, error) {
 	object, err := item.object()
 	if err != nil {
 		return nil, err
 	}
-
 	b, err := cd.Marshal(object)
 	if err != nil {
 		log.Printf("cache: Marshal key=%q failed: %s", item.Key, err)
@@ -94,10 +97,11 @@ func (cd *Codec) set(item *Item) ([]byte, error) {
 	if cd.localCache != nil {
 		cd.localCache.Set(item.Key, b)
 	}
-
-	err = cd.Redis.Set(item.Key, b, item.exp()).Err()
-	if err != nil {
-		log.Printf("cache: Set key=%q failed: %s", item.Key, err)
+	if cd.Redis != nil {
+		err = cd.Redis.Set(item.Key, b, item.exp()).Err()
+		if err != nil {
+			log.Printf("cache: Set key=%q failed: %s", item.Key, err)
+		}
 	}
 	return b, err
 }
@@ -110,6 +114,9 @@ func (cd *Codec) Exists(key string) bool {
 // Get gets the object for the given key.
 func (cd *Codec) Get(key string, object interface{}) error {
 	return cd.get(key, object, false)
+}
+func (cd *Codec) GetLocal(key string) (interface{}, bool) {
+	return cd.localCache.Get(key)
 }
 
 func (cd *Codec) get(key string, object interface{}, onlyLocalCache bool) error {
@@ -131,14 +138,6 @@ func (cd *Codec) get(key string, object interface{}, onlyLocalCache bool) error 
 }
 
 func (cd *Codec) getBytes(key string, onlyLocalCache bool) ([]byte, error) {
-	if cd.localCache != nil {
-		b, ok := cd.localCache.Get(key)
-		if ok {
-			atomic.AddUint64(&cd.localHits, 1)
-			return b, nil
-		}
-		atomic.AddUint64(&cd.localMisses, 1)
-	}
 
 	if onlyLocalCache {
 		return nil, ErrCacheMiss
